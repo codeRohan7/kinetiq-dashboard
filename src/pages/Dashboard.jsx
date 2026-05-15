@@ -4,7 +4,7 @@ import { auth, db } from '../config/firebase';
 import { initializeApp, getApps } from 'firebase/app';
 import { getAuth, createUserWithEmailAndPassword, setPersistence, inMemoryPersistence, sendPasswordResetEmail } from 'firebase/auth';
 import { collection, getDocs, addDoc, query, where, doc, updateDoc, deleteDoc } from 'firebase/firestore';
-import { Users, Building2, Activity, TrendingUp, LogOut, Plus, Search, Edit2, Trash2, Eye, EyeOff, KeyRound } from 'lucide-react';
+import { Users, Building2, Activity, TrendingUp, LogOut, Plus, Search, Edit2, Trash2, Eye, EyeOff, KeyRound, Filter, Download } from 'lucide-react';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
@@ -30,6 +30,34 @@ const secondaryApp = getApps().find(a => a.name === 'vendorHelper') ||
 const secondaryAuth = getAuth(secondaryApp);
 setPersistence(secondaryAuth, inMemoryPersistence).catch(console.error);
 
+const ARCH_TYPES = [
+  { id: 'All', label: 'All Arch Types' },
+  { id: 'collapsed', label: 'Collapsed - (Flat)' },
+  { id: 'low', label: 'Low' },
+  { id: 'normal', label: 'Normal' },
+  { id: 'high', label: 'High' },
+];
+
+const FOOT_TYPES = [
+  { id: 'All', label: 'All Foot Types' },
+  { id: 'severe-overpronation', label: 'Severe Overpronation' },
+  { id: 'overpronation', label: 'Overpronation' },
+  { id: 'neutral', label: 'Neutral' },
+  { id: 'underpronation', label: 'Underpronation (Supination)' },
+];
+
+// CSV export helper
+const exportToCSV = (rows, filename) => {
+  if (!rows.length) return;
+  const headers = Object.keys(rows[0]);
+  const csv = [headers.join(','), ...rows.map(r => headers.map(h => `"${(r[h] ?? '').toString().replace(/"/g, '""')}"`).join(','))].join('\n');
+  const blob = new Blob([csv], { type: 'text/csv' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = filename; a.click();
+  URL.revokeObjectURL(url);
+};
+
 const Dashboard = () => {
   const navigate = useNavigate();
   const [vendors, setVendors] = useState([]);
@@ -40,6 +68,11 @@ const Dashboard = () => {
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedVendor, setSelectedVendor] = useState(null);
   const [showNewVendorPassword, setShowNewVendorPassword] = useState(false);
+  const [isSuperAdmin, setIsSuperAdmin] = useState(false);
+  const [currentVendorEmail, setCurrentVendorEmail] = useState(null);
+  // Chart & table filters
+  const [archFilter, setArchFilter] = useState('All');
+  const [footFilter, setFootFilter] = useState('All');
 
   const [newVendor, setNewVendor] = useState({
     name: '',
@@ -57,9 +90,42 @@ const Dashboard = () => {
     vendorEmail: ''
   });
 
- const scanData = [
-  { month: 'Total', scans: users.reduce((s,u)=>s+(u.totalScans||0),0), users: users.length }
-];
+ // Apply arch + foot-type filters
+ const filteredByType = users.filter(u => {
+   const archOk = archFilter === 'All' || (u.medialArchType || '').toLowerCase() === archFilter.toLowerCase();
+   const footOk = footFilter === 'All' || (u.footType || '').toLowerCase() === footFilter.toLowerCase();
+   return archOk && footOk;
+ });
+
+  // Group by month (last 6 months)
+  const scanData = Array.from({ length: 6 }).map((_, i) => {
+    const d = new Date();
+    d.setMonth(d.getMonth() - (5 - i));
+    return {
+      month: d.toLocaleString('default', { month: 'short' }),
+      year: d.getFullYear(),
+      scans: 0,
+      users: 0
+    };
+  });
+
+  filteredByType.forEach(u => {
+    const dateStr = u.createdAt || u.lastScanAt;
+    if (dateStr) {
+      const d = new Date(dateStr);
+      const mName = d.toLocaleString('default', { month: 'short' });
+      const mYear = d.getFullYear();
+      const monthObj = scanData.find(m => m.month === mName && m.year === mYear);
+      if (monthObj) {
+        monthObj.users += 1;
+        monthObj.scans += (u.totalScans || 1);
+      }
+    } else {
+      // fallback to current month if no date
+      scanData[5].users += 1;
+      scanData[5].scans += (u.totalScans || 1);
+    }
+  });
 
 const totalScans = users.reduce((sum, user) => sum + (user.totalScans || 0), 0);
 const [editVendorDialogOpen, setEditVendorDialogOpen] = useState(false);
@@ -76,29 +142,17 @@ const handleUpdateVendor = async (e) => {
       name: editVendor.name,
       companyName: editVendor.companyName,
       phone: editVendor.phone,
-      Address: editVendor.Address
+      address: editVendor.address
     });
 
-    // If a new password was provided, update it via secondary app
+    // If Send Reset Email was triggered
     if (newVendorPassword.trim().length > 0) {
-      if (newVendorPassword.length < 6) {
-        toast.error('Password must be at least 6 characters');
-        return;
-      }
       setChangingPassword(true);
       try {
-        // We need the vendor's current password — not available. Use Admin SDK workaround:
-        // Sign in via secondary app using a temporary re-auth, then update.
-        // Since we don't store the old password, we use Firebase password update trick:
-        // Sign in secondary app, update password.
-        // NOTE: This requires the vendor email to match. We sign in via the secondary auth
-        // and immediately update the password. If we don't know the old password,
-        // we can only send a reset email as fallback.
-        toast.info('Sending password reset email to vendor...');
         await sendPasswordResetEmail(auth, editVendor.email.trim().toLowerCase());
         toast.success('Password reset email sent to vendor!');
       } catch (pwErr) {
-        console.error('Password update error:', pwErr);
+        console.error('Password reset error:', pwErr);
         toast.error('Could not send password reset: ' + pwErr.message);
       } finally {
         setChangingPassword(false);
@@ -139,13 +193,29 @@ const handleEditVendor = (vendor) => {
 
   const fetchData = async () => {
     try {
-      const vendorsSnapshot = await getDocs(collection(db, 'vendors'));
-      const vendorsData = vendorsSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-      setVendors(vendorsData);
+      const currentUser = auth.currentUser;
+      if (!currentUser) { navigate('/login'); return; }
 
-      const usersSnapshot = await getDocs(collection(db, 'users'));
-      const usersData = usersSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-      setUsers(usersData);
+      // Detect role
+      const vendorQ = query(collection(db, 'vendors'), where('email', '==', currentUser.email));
+      const vendorSnap = await getDocs(vendorQ);
+      const myVendorDoc = vendorSnap.empty ? null : vendorSnap.docs[0].data();
+      const superAdmin = myVendorDoc?.isSuperAdmin === true;
+      setIsSuperAdmin(superAdmin);
+      setCurrentVendorEmail(currentUser.email);
+
+      if (superAdmin) {
+        const vendorsSnapshot = await getDocs(collection(db, 'vendors'));
+        setVendors(vendorsSnapshot.docs.map(d => ({ id: d.id, ...d.data() })));
+        const usersSnapshot = await getDocs(collection(db, 'users'));
+        setUsers(usersSnapshot.docs.map(d => ({ id: d.id, ...d.data() })));
+      } else {
+        // Vendor-scoped: only their own users
+        setVendors([]);
+        const usersQ = query(collection(db, 'users'), where('vendorEmail', '==', currentUser.email));
+        const usersSnap = await getDocs(usersQ);
+        setUsers(usersSnap.docs.map(d => ({ id: d.id, ...d.data() })));
+      }
 
       setLoading(false);
     } catch (error) {
@@ -252,10 +322,23 @@ const handleEditVendor = (vendor) => {
     vendor.email?.toLowerCase().includes(searchTerm.toLowerCase())
   );
 
-  const filteredUsers = users.filter(user => 
+  const filteredUsers = filteredByType.filter(user =>
     user.name?.toLowerCase().includes(searchTerm.toLowerCase()) ||
     user.email?.toLowerCase().includes(searchTerm.toLowerCase())
   );
+
+  const handleExport = () => {
+    const rows = filteredUsers.map(u => ({
+      Name: u.name || '',
+      Email: u.email || '',
+      Phone: u.phone || '',
+      VendorEmail: u.vendorEmail || '',
+      'Medial Arch Type': u.medialArchType || '',
+      'Foot Type': u.footType || '',
+      'Total Scans': u.totalScans || 0,
+    }));
+    exportToCSV(rows, `kinetiq_users_${new Date().toISOString().slice(0,10)}.csv`);
+  };
 const [editUserDialogOpen, setEditUserDialogOpen] = useState(false);
 const [editUser, setEditUser] = useState(null);
 
@@ -324,7 +407,7 @@ const handleUpdateUser = async (e) => {
               <h1 className="text-2xl font-bold bg-gradient-to-r from-purple-600 to-pink-600 bg-clip-text text-transparent" style={{fontFamily: 'Space Grotesk, sans-serif'}} data-testid="dashboard-title">
                 KINETIQ Dashboard
               </h1>
-              <p className="text-xs text-gray-500">Super Admin Portal</p>
+              <p className="text-xs text-gray-500">{isSuperAdmin ? 'Super Admin Portal' : 'Vendor Portal'}</p>
             </div>
           </div>
           <Button 
@@ -341,18 +424,20 @@ const handleUpdateUser = async (e) => {
 
       <main className="max-w-7xl mx-auto px-6 py-8">
         <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
-          <Card className="bg-white/60 backdrop-blur-sm border-purple-100 hover:shadow-lg transition" data-testid="total-vendors-card">
-            <CardHeader className="pb-2">
-              <CardDescription className="text-gray-600">Total Vendors</CardDescription>
-              <CardTitle className="text-3xl font-bold text-purple-600">{vendors.length}</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="flex items-center gap-2 text-sm text-green-600">
-                <TrendingUp size={16} />
-                {/* <span>+12% from last month</span> */}
-              </div>
-            </CardContent>
-          </Card>
+          {isSuperAdmin && (
+            <Card className="bg-white/60 backdrop-blur-sm border-purple-100 hover:shadow-lg transition" data-testid="total-vendors-card">
+              <CardHeader className="pb-2">
+                <CardDescription className="text-gray-600">Total Vendors</CardDescription>
+                <CardTitle className="text-3xl font-bold text-purple-600">{vendors.length}</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="flex items-center gap-2 text-sm text-green-600">
+                  <TrendingUp size={16} />
+                  {/* <span>+12% from last month</span> */}
+                </div>
+              </CardContent>
+            </Card>
+          )}
 
           <Card className="bg-white/60 backdrop-blur-sm border-pink-100 hover:shadow-lg transition" data-testid="total-users-card">
             <CardHeader className="pb-2">
@@ -397,8 +482,31 @@ const handleUpdateUser = async (e) => {
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
           <Card className="bg-white/60 backdrop-blur-sm border-purple-100" data-testid="scan-trends-chart">
             <CardHeader>
-              <CardTitle className="text-lg font-semibold text-gray-800">Scan Trends</CardTitle>
-              <CardDescription>Monthly scan and user growth</CardDescription>
+              <div className="flex items-start justify-between flex-wrap gap-3">
+                <div>
+                  <CardTitle className="text-lg font-semibold text-gray-800">Scan Trends</CardTitle>
+                  <CardDescription>Filtered by arch &amp; foot type</CardDescription>
+                </div>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <Filter size={15} className="text-purple-400" />
+                  <select
+                    value={archFilter}
+                    onChange={e => setArchFilter(e.target.value)}
+                    className="text-xs border border-purple-200 rounded-lg px-2 py-1.5 bg-white text-gray-700 focus:outline-none focus:ring-2 focus:ring-purple-300"
+                    data-testid="arch-filter"
+                  >
+                    {ARCH_TYPES.map(t => <option key={t.id} value={t.id}>{t.label}</option>)}
+                  </select>
+                  <select
+                    value={footFilter}
+                    onChange={e => setFootFilter(e.target.value)}
+                    className="text-xs border border-pink-200 rounded-lg px-2 py-1.5 bg-white text-gray-700 focus:outline-none focus:ring-2 focus:ring-pink-300"
+                    data-testid="foot-filter"
+                  >
+                    {FOOT_TYPES.map(t => <option key={t.id} value={t.id}>{t.label}</option>)}
+                  </select>
+                </div>
+              </div>
             </CardHeader>
             <CardContent>
               <ResponsiveContainer width="100%" height={250}>
@@ -419,25 +527,27 @@ const handleUpdateUser = async (e) => {
             </CardContent>
           </Card>
 
-          <Card className="bg-white/60 backdrop-blur-sm border-pink-100" data-testid="vendor-performance-chart">
-            <CardHeader>
-              <CardTitle className="text-lg font-semibold text-gray-800">Vendor Performance</CardTitle>
-              <CardDescription>Top performing vendors</CardDescription>
-            </CardHeader>
-            <CardContent>
-              <ResponsiveContainer width="100%" height={250}>
-                <BarChart data={vendorPerformance}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
-                  <XAxis dataKey="name" stroke="#6b7280" />
-                  <YAxis stroke="#6b7280" />
-                  <Tooltip />
-                  <Legend />
-                  <Bar dataKey="scans" fill="#ec4899" radius={[8, 8, 0, 0]} />
-                  <Bar dataKey="users" fill="#9333ea" radius={[8, 8, 0, 0]} />
-                </BarChart>
-              </ResponsiveContainer>
-            </CardContent>
-          </Card>
+          {isSuperAdmin && (
+            <Card className="bg-white/60 backdrop-blur-sm border-pink-100" data-testid="vendor-performance-chart">
+              <CardHeader>
+                <CardTitle className="text-lg font-semibold text-gray-800">Vendor Performance</CardTitle>
+                <CardDescription>Top performing vendors</CardDescription>
+              </CardHeader>
+              <CardContent>
+                <ResponsiveContainer width="100%" height={250}>
+                  <BarChart data={vendorPerformance}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+                    <XAxis dataKey="name" stroke="#6b7280" />
+                    <YAxis stroke="#6b7280" />
+                    <Tooltip />
+                    <Legend />
+                    <Bar dataKey="scans" fill="#ec4899" radius={[8, 8, 0, 0]} />
+                    <Bar dataKey="users" fill="#9333ea" radius={[8, 8, 0, 0]} />
+                  </BarChart>
+                </ResponsiveContainer>
+              </CardContent>
+            </Card>
+          )}
         </div>
 
         <Card className="bg-white/60 backdrop-blur-sm border-purple-100" data-testid="main-content-tabs">
@@ -445,9 +555,19 @@ const handleUpdateUser = async (e) => {
             <div className="flex items-center justify-between">
               <div>
                 <CardTitle className="text-xl font-bold text-gray-800">Management Portal</CardTitle>
-                <CardDescription>Manage vendors and users</CardDescription>
+                <CardDescription>{isSuperAdmin ? 'Manage vendors and users' : 'Your scanned users'}</CardDescription>
               </div>
               <div className="flex gap-2">
+                <Button
+                  variant="outline"
+                  className="gap-2 border-purple-200 hover:bg-purple-50 hover:text-purple-700"
+                  onClick={handleExport}
+                  data-testid="export-csv-button"
+                >
+                  <Download size={16} />
+                  Export CSV
+                </Button>
+                {isSuperAdmin && (
                 <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
                   <DialogTrigger asChild>
                     <Button className="gap-2 bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-700 hover:to-pink-700" data-testid="add-vendor-button">
@@ -544,9 +664,8 @@ const handleUpdateUser = async (e) => {
                       <Button type="submit" className="w-full bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-700 hover:to-pink-700" data-testid="submit-vendor-button">Register Vendor</Button>
                     </form>
                   </DialogContent>
-                </Dialog>
-
-                
+                 </Dialog>
+                )}
               </div>
             </div>
 
@@ -600,35 +719,39 @@ const handleUpdateUser = async (e) => {
           <Label htmlFor="edit-address">Address</Label>
           <Input
             id="edit-address"
-            value={editVendor.Address || ''}
-            onChange={(e) => setEditVendor({ ...editVendor, Address: e.target.value })}
+            value={editVendor.address || ''}
+            onChange={(e) => setEditVendor({ ...editVendor, address: e.target.value })}
           />
         </div>
 
         <div className="border-t border-gray-200 pt-4">
-          <div className="flex items-center gap-2 mb-2">
+          <div className="flex items-center gap-2 mb-1">
             <KeyRound size={15} className="text-purple-500" />
-            <Label className="text-sm font-semibold text-gray-700">Change Password</Label>
+            <Label className="text-sm font-semibold text-gray-700">Vendor Password</Label>
           </div>
-          <p className="text-xs text-gray-500 mb-2">Leave blank to keep current password. Entering a value will send a password reset email to the vendor.</p>
-          <div className="relative">
-            <Input
-              id="edit-vendor-password"
-              type={showEditPassword ? 'text' : 'password'}
-              value={newVendorPassword}
-              onChange={(e) => setNewVendorPassword(e.target.value)}
-              placeholder="New password (optional)"
-              className="pr-10"
-            />
-            <button
-              type="button"
-              onClick={() => setShowEditPassword(v => !v)}
-              className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
-              tabIndex={-1}
-            >
-              {showEditPassword ? <EyeOff size={16} /> : <Eye size={16} />}
-            </button>
-          </div>
+          <p className="text-xs text-gray-500 mb-3">
+            You cannot directly set a vendor's password. Click below to send them a secure password reset email so they can choose their own password.
+          </p>
+          <Button
+            type="button"
+            variant="outline"
+            disabled={changingPassword}
+            onClick={async () => {
+              setChangingPassword(true);
+              try {
+                await sendPasswordResetEmail(auth, editVendor.email.trim().toLowerCase());
+                toast.success('Password reset email sent to ' + editVendor.email);
+              } catch (err) {
+                toast.error('Failed to send reset email: ' + err.message);
+              } finally {
+                setChangingPassword(false);
+              }
+            }}
+            className="w-full border-purple-300 text-purple-700 hover:bg-purple-50 gap-2"
+          >
+            <KeyRound size={15} />
+            {changingPassword ? 'Sending...' : 'Send Password Reset Email'}
+          </Button>
         </div>
 
         <Button type="submit" disabled={changingPassword} className="w-full bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-700 hover:to-pink-700">
@@ -698,20 +821,24 @@ const handleUpdateUser = async (e) => {
               </div>
             </div>
 
-            <Tabs defaultValue="vendors" className="w-full" data-testid="management-tabs">
-              <TabsList className="grid w-full grid-cols-3 bg-purple-100">
-                <TabsTrigger value="vendors" data-testid="vendors-tab">
-                  <Building2 size={16} className="mr-2" />
-                  Vendors ({vendors.length})
-                </TabsTrigger>
+            <Tabs defaultValue={isSuperAdmin ? "vendors" : "users"} className="w-full" data-testid="management-tabs">
+              <TabsList className={`grid w-full bg-purple-100 ${isSuperAdmin ? 'grid-cols-3' : 'grid-cols-1'}`}>
+                {isSuperAdmin && (
+                  <TabsTrigger value="vendors" data-testid="vendors-tab">
+                    <Building2 size={16} className="mr-2" />
+                    Vendors ({vendors.length})
+                  </TabsTrigger>
+                )}
                 <TabsTrigger value="users" data-testid="users-tab">
                   <Users size={16} className="mr-2" />
-                  All Users ({users.length})
+                  {isSuperAdmin ? `All Users (${users.length})` : `My Users (${users.length})`}
                 </TabsTrigger>
-                <TabsTrigger value="vendor-users" data-testid="vendor-users-tab">
-                  <Activity size={16} className="mr-2" />
-                  Users by Vendor
-                </TabsTrigger>
+                {isSuperAdmin && (
+                  <TabsTrigger value="vendor-users" data-testid="vendor-users-tab">
+                    <Activity size={16} className="mr-2" />
+                    Users by Vendor
+                  </TabsTrigger>
+                )}
               </TabsList>
 
               <TabsContent value="vendors" className="mt-6" data-testid="vendors-content">
@@ -790,7 +917,9 @@ const handleUpdateUser = async (e) => {
                         <TableHead>Name</TableHead>
                         <TableHead>Email</TableHead>
                         <TableHead>Phone</TableHead>
-                        <TableHead>Vendor Email</TableHead>
+                        {isSuperAdmin && <TableHead>Vendor Email</TableHead>}
+                        <TableHead>Medial Arch Type</TableHead>
+                        <TableHead>Foot Type</TableHead>
                         <TableHead>Scans</TableHead>
                         <TableHead className="text-right">Actions</TableHead>
                       </TableRow>
@@ -801,7 +930,17 @@ const handleUpdateUser = async (e) => {
                           <TableCell className="font-medium">{user.name}</TableCell>
                           <TableCell>{user.email}</TableCell>
                           <TableCell>{user.phone}</TableCell>
-                          <TableCell>{user.vendorEmail}</TableCell>
+                          {isSuperAdmin && <TableCell>{user.vendorEmail}</TableCell>}
+                          <TableCell>
+                            {user.medialArchType
+                              ? <Badge className="bg-purple-100 text-purple-700 hover:bg-purple-100">{user.medialArchType}</Badge>
+                              : <span className="text-gray-400 text-xs">—</span>}
+                          </TableCell>
+                          <TableCell>
+                            {user.footType
+                              ? <Badge className="bg-pink-100 text-pink-700 hover:bg-pink-100">{user.footType}</Badge>
+                              : <span className="text-gray-400 text-xs">—</span>}
+                          </TableCell>
                           <TableCell>
                             <Badge className="bg-blue-100 text-blue-700 hover:bg-blue-100">
                               {user.totalScans || 0} scans
