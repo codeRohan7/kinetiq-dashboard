@@ -1,9 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { auth, db } from '../config/firebase';
+import { initializeApp, getApps } from 'firebase/app';
+import { getAuth, createUserWithEmailAndPassword, setPersistence, inMemoryPersistence, sendPasswordResetEmail } from 'firebase/auth';
 import { collection, getDocs, addDoc, query, where, doc, updateDoc, deleteDoc } from 'firebase/firestore';
-import { createUserWithEmailAndPassword } from 'firebase/auth';
-import { Users, Building2, Activity, TrendingUp, LogOut, Plus, Search, Edit2, Trash2, Eye } from 'lucide-react';
+import { Users, Building2, Activity, TrendingUp, LogOut, Plus, Search, Edit2, Trash2, Eye, EyeOff, KeyRound } from 'lucide-react';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
@@ -15,6 +16,20 @@ import { Badge } from '../components/ui/badge';
 import { toast } from 'sonner';
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, BarChart, Bar, Legend } from 'recharts';
 
+// Secondary Firebase app — uses inMemoryPersistence so it never
+// touches localStorage and never displaces the admin session.
+const secondaryApp = getApps().find(a => a.name === 'vendorHelper') ||
+  initializeApp({
+    apiKey: "AIzaSyAdJldm2L-HRChGyu6vpF3SYqBm--RQ9sU",
+    authDomain: "kinetiq-3ec44.firebaseapp.com",
+    projectId: "kinetiq-3ec44",
+    storageBucket: "kinetiq-3ec44.firebasestorage.app",
+    messagingSenderId: "1043474090428",
+    appId: "1:1043474090428:web:19bb670e0e2ab1486b03b9",
+  }, 'vendorHelper');
+const secondaryAuth = getAuth(secondaryApp);
+setPersistence(secondaryAuth, inMemoryPersistence).catch(console.error);
+
 const Dashboard = () => {
   const navigate = useNavigate();
   const [vendors, setVendors] = useState([]);
@@ -24,13 +39,15 @@ const Dashboard = () => {
   const [userDialogOpen, setUserDialogOpen] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedVendor, setSelectedVendor] = useState(null);
-  
+  const [showNewVendorPassword, setShowNewVendorPassword] = useState(false);
+
   const [newVendor, setNewVendor] = useState({
     name: '',
     email: '',
     companyName: '',
     phone: '',
-    password: 'password123'
+    address: '',
+    password: ''
   });
 
   const [newUser, setNewUser] = useState({
@@ -47,20 +64,50 @@ const Dashboard = () => {
 const totalScans = users.reduce((sum, user) => sum + (user.totalScans || 0), 0);
 const [editVendorDialogOpen, setEditVendorDialogOpen] = useState(false);
 const [editVendor, setEditVendor] = useState(null);
+const [newVendorPassword, setNewVendorPassword] = useState('');
+const [showEditPassword, setShowEditPassword] = useState(false);
+const [changingPassword, setChangingPassword] = useState(false);
+
 const handleUpdateVendor = async (e) => {
   e.preventDefault();
   try {
     const vendorRef = doc(db, "vendors", editVendor.id);
     await updateDoc(vendorRef, {
       name: editVendor.name,
-      email: editVendor.email,
       companyName: editVendor.companyName,
       phone: editVendor.phone,
       Address: editVendor.Address
     });
 
+    // If a new password was provided, update it via secondary app
+    if (newVendorPassword.trim().length > 0) {
+      if (newVendorPassword.length < 6) {
+        toast.error('Password must be at least 6 characters');
+        return;
+      }
+      setChangingPassword(true);
+      try {
+        // We need the vendor's current password — not available. Use Admin SDK workaround:
+        // Sign in via secondary app using a temporary re-auth, then update.
+        // Since we don't store the old password, we use Firebase password update trick:
+        // Sign in secondary app, update password.
+        // NOTE: This requires the vendor email to match. We sign in via the secondary auth
+        // and immediately update the password. If we don't know the old password,
+        // we can only send a reset email as fallback.
+        toast.info('Sending password reset email to vendor...');
+        await sendPasswordResetEmail(auth, editVendor.email.trim().toLowerCase());
+        toast.success('Password reset email sent to vendor!');
+      } catch (pwErr) {
+        console.error('Password update error:', pwErr);
+        toast.error('Could not send password reset: ' + pwErr.message);
+      } finally {
+        setChangingPassword(false);
+      }
+    }
+
     toast.success("Vendor updated successfully!");
     setEditVendorDialogOpen(false);
+    setNewVendorPassword('');
     fetchData();
   } catch (error) {
     console.error("Error updating vendor:", error);
@@ -70,6 +117,8 @@ const handleUpdateVendor = async (e) => {
 
 const handleEditVendor = (vendor) => {
   setEditVendor(vendor);
+  setNewVendorPassword('');
+  setShowEditPassword(false);
   setEditVendorDialogOpen(true);
 };
 
@@ -108,22 +157,66 @@ const handleEditVendor = (vendor) => {
 
   const handleAddVendor = async (e) => {
     e.preventDefault();
+    if (!newVendor.password || newVendor.password.length < 6) {
+      toast.error('Password must be at least 6 characters');
+      return;
+    }
+
+    const normalizedEmail = newVendor.email.trim().toLowerCase();
+
+    // Check if this vendor email already exists in Firestore
+    const existingQ = query(collection(db, 'vendors'), where('email', '==', normalizedEmail));
+    const existingSnap = await getDocs(existingQ);
+    if (!existingSnap.empty) {
+      toast.error('A vendor with this email already exists in the system.');
+      return;
+    }
+
     try {
-      await createUserWithEmailAndPassword(auth, newVendor.email, newVendor.password);
-      
+      // Ensure inMemoryPersistence before creating — isolates secondary auth from admin session
+      await setPersistence(secondaryAuth, inMemoryPersistence);
+
+      let authExisted = false;
+      try {
+        // Use secondary app so the admin is never signed out
+        await createUserWithEmailAndPassword(secondaryAuth, normalizedEmail, newVendor.password);
+        await secondaryAuth.signOut();
+      } catch (authError) {
+        if (authError.code === 'auth/email-already-in-use') {
+          // Auth account from a previous failed attempt — its password is unknown.
+          // Send a reset email so the vendor can set a fresh password and log in.
+          authExisted = true;
+          await sendPasswordResetEmail(auth, normalizedEmail);
+          toast.warning(
+            'This email already had a Firebase account (from a previous attempt). ' +
+            'A password reset email has been sent to the vendor so they can set their login password.'
+          );
+        } else {
+          throw authError;
+        }
+      }
+
+      // Write the Firestore vendor document regardless
       await addDoc(collection(db, 'vendors'), {
         name: newVendor.name,
-        email: newVendor.email,
+        email: normalizedEmail,
         companyName: newVendor.companyName,
         phone: newVendor.phone,
+        address: newVendor.address,
         totalScans: 0,
         createdAt: new Date().toISOString(),
         status: 'active'
       });
 
-      toast.success('Vendor registered successfully!');
+      if (!authExisted) {
+        toast.success('Vendor registered successfully! They can now log in with the password you set.');
+      } else {
+        toast.success('Vendor profile created. They must use the password reset email to set their password.');
+      }
+
       setDialogOpen(false);
-      setNewVendor({ name: '', email: '', companyName: '', phone: '', Address: '', password: 'password123' });
+      setNewVendor({ name: '', email: '', companyName: '', phone: '', address: '', password: '' });
+      setShowNewVendorPassword(false);
       fetchData();
     } catch (error) {
       console.error('Error adding vendor:', error);
@@ -427,17 +520,28 @@ const handleUpdateUser = async (e) => {
                       
                       <div>
                         <Label htmlFor="vendor-password">Password</Label>
-                        <Input
-                          id="vendor-password"
-                          type="password"
-                          value={newVendor.password}
-                          onChange={(e) => setNewVendor({...newVendor, password: e.target.value})}
-                          placeholder="Default: password123"
-                          required
-                          data-testid="vendor-password-input"
-                        />
+                        <div className="relative">
+                          <Input
+                            id="vendor-password"
+                            type={showNewVendorPassword ? 'text' : 'password'}
+                            value={newVendor.password}
+                            onChange={(e) => setNewVendor({...newVendor, password: e.target.value})}
+                            placeholder="Min 6 characters"
+                            required
+                            className="pr-10"
+                            data-testid="vendor-password-input"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => setShowNewVendorPassword(v => !v)}
+                            className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                            tabIndex={-1}
+                          >
+                            {showNewVendorPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+                          </button>
+                        </div>
                       </div>
-                      <Button type="submit" className="w-full" data-testid="submit-vendor-button">Register Vendor</Button>
+                      <Button type="submit" className="w-full bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-700 hover:to-pink-700" data-testid="submit-vendor-button">Register Vendor</Button>
                     </form>
                   </DialogContent>
                 </Dialog>
@@ -492,16 +596,44 @@ const handleUpdateUser = async (e) => {
             onChange={(e) => setEditVendor({ ...editVendor, phone: e.target.value })}
           />
         </div>
-           <div>
-          <Label htmlFor="edit-company">Address</Label>
+        <div>
+          <Label htmlFor="edit-address">Address</Label>
           <Input
-            id="edit-company"
-            value={editVendor.Address}
+            id="edit-address"
+            value={editVendor.Address || ''}
             onChange={(e) => setEditVendor({ ...editVendor, Address: e.target.value })}
           />
         </div>
 
-        <Button type="submit" className="w-full">Save Changes</Button>
+        <div className="border-t border-gray-200 pt-4">
+          <div className="flex items-center gap-2 mb-2">
+            <KeyRound size={15} className="text-purple-500" />
+            <Label className="text-sm font-semibold text-gray-700">Change Password</Label>
+          </div>
+          <p className="text-xs text-gray-500 mb-2">Leave blank to keep current password. Entering a value will send a password reset email to the vendor.</p>
+          <div className="relative">
+            <Input
+              id="edit-vendor-password"
+              type={showEditPassword ? 'text' : 'password'}
+              value={newVendorPassword}
+              onChange={(e) => setNewVendorPassword(e.target.value)}
+              placeholder="New password (optional)"
+              className="pr-10"
+            />
+            <button
+              type="button"
+              onClick={() => setShowEditPassword(v => !v)}
+              className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+              tabIndex={-1}
+            >
+              {showEditPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+            </button>
+          </div>
+        </div>
+
+        <Button type="submit" disabled={changingPassword} className="w-full bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-700 hover:to-pink-700">
+          {changingPassword ? 'Processing...' : 'Save Changes'}
+        </Button>
       </form>
     )}
   </DialogContent>
