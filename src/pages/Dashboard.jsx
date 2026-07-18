@@ -84,7 +84,7 @@ const Dashboard = () => {
   const [manageStaffDialogOpen, setManageStaffDialogOpen] = useState(false);
   const [selectedVendorForStaff, setSelectedVendorForStaff] = useState(null);
   const [vendorStaffList, setVendorStaffList] = useState([]);
-  const [addStaffForm, setAddStaffForm] = useState({ name: '', email: '', phone: '', password: '' });
+  const [addStaffForm, setAddStaffForm] = useState({ name: '', email: '', phone: '', companyName: '', address: '', password: '' });
   const [showStaffPassword, setShowStaffPassword] = useState(false);
   const [addingStaff, setAddingStaff] = useState(false);
   // Edit staff state
@@ -403,6 +403,8 @@ const Dashboard = () => {
         name: addStaffForm.name,
         email: normalizedEmail,
         phone: addStaffForm.phone,
+        companyName: addStaffForm.companyName,
+        address: addStaffForm.address,
         vendorEmail: selectedVendorForStaff.email,
         vendorId: selectedVendorForStaff.id,
         vendorCompanyName: selectedVendorForStaff.companyName || selectedVendorForStaff.name,
@@ -412,7 +414,7 @@ const Dashboard = () => {
       });
 
       toast.success(`Staff member "${addStaffForm.name}" added successfully!`);
-      setAddStaffForm({ name: '', email: '', phone: '', password: '' });
+      setAddStaffForm({ name: '', email: '', phone: '', companyName: '', address: '', password: '' });
       setShowStaffPassword(false);
 
       // Refresh staff list in dialog
@@ -455,6 +457,8 @@ const Dashboard = () => {
       await updateDoc(staffRef, {
         name: editStaffData.name,
         phone: editStaffData.phone,
+        companyName: editStaffData.companyName,
+        address: editStaffData.address,
         status: editStaffData.status,
       });
       toast.success('Staff member updated successfully!');
@@ -1070,7 +1074,32 @@ const Dashboard = () => {
                           value={addStaffForm.phone}
                           onChange={(e) => setAddStaffForm({ ...addStaffForm, phone: e.target.value })}
                           placeholder="+1234567890"
+                          required
                           data-testid="staff-phone-input"
+                        />
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <Label htmlFor="staff-company">Clinic / Company Name</Label>
+                        <Input
+                          id="staff-company"
+                          value={addStaffForm.companyName}
+                          onChange={(e) => setAddStaffForm({ ...addStaffForm, companyName: e.target.value })}
+                          placeholder="Clinic Name"
+                          required
+                          data-testid="staff-company-input"
+                        />
+                      </div>
+                      <div>
+                        <Label htmlFor="staff-address">Address</Label>
+                        <Input
+                          id="staff-address"
+                          value={addStaffForm.address}
+                          onChange={(e) => setAddStaffForm({ ...addStaffForm, address: e.target.value })}
+                          placeholder="123 Main St"
+                          required
+                          data-testid="staff-address-input"
                         />
                       </div>
                     </div>
@@ -1230,6 +1259,27 @@ const Dashboard = () => {
                         value={editStaffData.phone || ''}
                         onChange={(e) => setEditStaffData({ ...editStaffData, phone: e.target.value })}
                         placeholder="+1234567890"
+                        required
+                      />
+                    </div>
+                    <div>
+                      <Label htmlFor="edit-staff-company">Clinic / Company Name</Label>
+                      <Input
+                        id="edit-staff-company"
+                        value={editStaffData.companyName || ''}
+                        onChange={(e) => setEditStaffData({ ...editStaffData, companyName: e.target.value })}
+                        placeholder="Clinic Name"
+                        required
+                      />
+                    </div>
+                    <div>
+                      <Label htmlFor="edit-staff-address">Address</Label>
+                      <Input
+                        id="edit-staff-address"
+                        value={editStaffData.address || ''}
+                        onChange={(e) => setEditStaffData({ ...editStaffData, address: e.target.value })}
+                        placeholder="123 Main St"
+                        required
                       />
                     </div>
                     <div>
