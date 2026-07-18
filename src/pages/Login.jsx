@@ -12,7 +12,6 @@ import { toast } from 'sonner';
 const Login = () => {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [companyName, setCompanyName] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const navigate = useNavigate();
@@ -28,23 +27,42 @@ const Login = () => {
     setLoading(true);
 
     try {
-      const userCredential = await signInWithEmailAndPassword(auth, email, password);
-      
-      const vendorsRef = collection(db, 'vendors');
-      const q = query(vendorsRef,
-        where('email', '==', email.trim().toLowerCase())
-      );
-      const querySnapshot = await getDocs(q);
+      const normalizedEmail = email.trim().toLowerCase();
+      await signInWithEmailAndPassword(auth, normalizedEmail, password);
 
-      if (querySnapshot.empty) {
-        toast.error('Access denied. This email is not registered as a vendor.');
-        await auth.signOut();
-        setLoading(false);
+      // 1. Check if super admin / vendor
+      const vendorsRef = collection(db, 'vendors');
+      const vendorQ = query(vendorsRef, where('email', '==', normalizedEmail));
+      const vendorSnap = await getDocs(vendorQ);
+
+      if (!vendorSnap.empty) {
+        // It's a vendor or super admin — proceed to dashboard
+        toast.success('Login successful!');
+        navigate('/dashboard');
         return;
       }
 
-      toast.success('Login successful!');
-      navigate('/dashboard');
+      // 2. Check if staff member
+      const staffRef = collection(db, 'staff');
+      const staffQ = query(staffRef, where('email', '==', normalizedEmail));
+      const staffSnap = await getDocs(staffQ);
+
+      if (!staffSnap.empty) {
+        const staffDoc = staffSnap.docs[0].data();
+        if (staffDoc.status === 'inactive') {
+          toast.error('Your staff account has been deactivated. Contact your vendor.');
+          await auth.signOut();
+          setLoading(false);
+          return;
+        }
+        toast.success('Login successful!');
+        navigate('/dashboard');
+        return;
+      }
+
+      // 3. No match — deny access
+      toast.error('Access denied. This email is not registered in the system.');
+      await auth.signOut();
     } catch (error) {
       console.error('Login error:', error);
       toast.error(error.message || 'Login failed. Please check your credentials.');
@@ -119,8 +137,7 @@ const Login = () => {
                       Forgot Password?
                     </h1>
                     <p className="text-gray-500 text-sm leading-relaxed">
-                      Enter the vendor email address linked to your account and
-                      we'll send you a password reset link.
+                      Enter your email address and we'll send you a password reset link.
                     </p>
                   </div>
 
@@ -128,7 +145,7 @@ const Login = () => {
                   <form onSubmit={handleForgotPassword} className="space-y-5">
                     <div>
                       <Label htmlFor="reset-email" className="text-gray-700 font-medium">
-                        Vendor Email Address
+                        Email Address
                       </Label>
                       <div className="relative mt-1">
                         <Mail
@@ -141,7 +158,7 @@ const Login = () => {
                           value={resetEmail}
                           onChange={(e) => setResetEmail(e.target.value)}
                           className="h-12 border-gray-300 focus:border-purple-500 focus:ring-purple-500 pl-10"
-                          placeholder="Enter your vendor email"
+                          placeholder="Enter your email"
                           required
                           data-testid="reset-email-input"
                         />
@@ -202,15 +219,19 @@ const Login = () => {
             /* ───── NORMAL LOGIN PANEL ───── */
             <>
               <div className="mb-8">
+                {/* Logo / icon */}
+                <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-purple-600 to-pink-600 flex items-center justify-center mb-5 shadow-lg shadow-purple-200">
+                  <span className="text-white font-bold text-xl" style={{ fontFamily: 'Space Grotesk, sans-serif' }}>K</span>
+                </div>
                 <h1
                   className="text-4xl font-bold text-gray-800 mb-2"
                   style={{ fontFamily: 'Space Grotesk, sans-serif' }}
                   data-testid="login-title"
                 >
-                  Super Admin Log In
+                  Log In
                 </h1>
                 <p className="text-gray-500 text-sm" data-testid="login-subtitle">
-                  Welcome back! Please enter your details
+                  Welcome back! Please enter your credentials to continue.
                 </p>
               </div>
 
@@ -219,16 +240,22 @@ const Login = () => {
                   <Label htmlFor="email" className="text-gray-700 font-medium">
                     Email
                   </Label>
-                  <Input
-                    id="email"
-                    type="email"
-                    value={email}
-                    onChange={(e) => setEmail(e.target.value)}
-                    className="mt-1 h-12 border-gray-300 focus:border-purple-500 focus:ring-purple-500"
-                    placeholder="Enter your email"
-                    required
-                    data-testid="login-email-input"
-                  />
+                  <div className="relative mt-1">
+                    <Mail
+                      size={18}
+                      className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none"
+                    />
+                    <Input
+                      id="email"
+                      type="email"
+                      value={email}
+                      onChange={(e) => setEmail(e.target.value)}
+                      className="h-12 border-gray-300 focus:border-purple-500 focus:ring-purple-500 pl-10"
+                      placeholder="Enter your email"
+                      required
+                      data-testid="login-email-input"
+                    />
+                  </div>
                 </div>
 
                 <div>
@@ -267,22 +294,6 @@ const Login = () => {
                   </div>
                 </div>
 
-                <div>
-                  <Label htmlFor="company" className="text-gray-700 font-medium">
-                    Company Name
-                  </Label>
-                  <Input
-                    id="company"
-                    type="text"
-                    value={companyName}
-                    onChange={(e) => setCompanyName(e.target.value)}
-                    className="mt-1 h-12 border-gray-300 focus:border-purple-500 focus:ring-purple-500"
-                    placeholder="Enter your company name"
-                    required
-                    data-testid="login-company-input"
-                  />
-                </div>
-
                 <Button
                   type="submit"
                   disabled={loading}
@@ -292,12 +303,17 @@ const Login = () => {
                   {loading ? 'Logging in...' : 'Log in'}
                 </Button>
               </form>
+
+              {/* Role hint */}
+              <p className="text-center text-xs text-gray-400 mt-6">
+                Works for Super Admins, Vendors &amp; Staff
+              </p>
             </>
           )}
         </div>
       </div>
 
-      {/* ── Right panel (unchanged) ── */}
+      {/* ── Right panel ── */}
       <div className="w-1/2 bg-gradient-to-br from-purple-500 via-purple-400 to-pink-400 flex items-center justify-center p-12 relative overflow-hidden">
         <div className="absolute inset-0 bg-gradient-to-br from-purple-600/20 to-pink-600/20"></div>
         <img
