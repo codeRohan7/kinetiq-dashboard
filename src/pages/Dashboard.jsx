@@ -7,7 +7,7 @@ import { collection, getDocs, addDoc, query, where, doc, updateDoc, deleteDoc, i
 import {
   Users, Building2, Activity, TrendingUp, LogOut, Plus, Search,
   Edit2, Trash2, Eye, EyeOff, KeyRound, Filter, Download, UserCog,
-  UserCheck, Shield, ChevronRight
+  UserCheck, Shield, ChevronRight, Calculator, IndianRupee, Clock
 } from 'lucide-react';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
@@ -62,11 +62,41 @@ const exportToCSV = (rows, filename) => {
   URL.revokeObjectURL(url);
 };
 
+// ─── ROI lead helpers ────────────────────────────────────────────────────────
+// The ROI calculator widget (embedded on the PHP website) writes `createdAt`
+// as a Firestore timestamp, so it comes back as a Timestamp object here.
+// Older/edge-case docs may hold an ISO string instead — handle both.
+const toDate = (value) => {
+  if (!value) return null;
+  if (typeof value.toDate === 'function') return value.toDate();
+  const d = new Date(value);
+  return isNaN(d.getTime()) ? null : d;
+};
+
+const fmtLeadDate = (value) => {
+  const d = toDate(value);
+  if (!d) return '—';
+  return d.toLocaleString('en-IN', {
+    day: '2-digit', month: 'short', year: 'numeric',
+    hour: '2-digit', minute: '2-digit'
+  });
+};
+
+const fmtINR = (n) => `₹${Math.round(Number(n) || 0).toLocaleString('en-IN')}`;
+
+const fmtBreakEven = (months) => {
+  const m = Number(months);
+  if (!isFinite(m) || m <= 0) return '—';
+  return m > 99 ? '99+ mo' : `${m.toFixed(1)} mo`;
+};
+
 const Dashboard = () => {
   const navigate = useNavigate();
   const [vendors, setVendors] = useState([]);
   const [users, setUsers] = useState([]);
   const [staffMembers, setStaffMembers] = useState([]);
+  const [roiLeads, setRoiLeads] = useState([]);
+  const [roiLeadsError, setRoiLeadsError] = useState(null);
   const [loading, setLoading] = useState(true);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
@@ -225,11 +255,33 @@ const Dashboard = () => {
         setUsers(usersSnapshot.docs.map(d => ({ id: d.id, ...d.data() })));
         const staffSnapshot = await getDocs(collection(db, 'staff'));
         setStaffMembers(staffSnapshot.docs.map(d => ({ id: d.id, ...d.data() })));
+        // ROI calculator leads from the public website widget (super admin only).
+        // Kept in its own try/catch so a rules/permission issue on this one
+        // collection can never blank out the whole dashboard.
+        try {
+          const leadsSnapshot = await getDocs(collection(db, 'roiLeads'));
+          const leads = leadsSnapshot.docs.map(d => ({ id: d.id, ...d.data() }));
+          leads.sort((a, b) => (toDate(b.createdAt)?.getTime() || 0) - (toDate(a.createdAt)?.getTime() || 0));
+          setRoiLeads(leads);
+          setRoiLeadsError(null);
+        } catch (leadErr) {
+          console.error('Error fetching ROI leads:', leadErr);
+          setRoiLeads([]);
+          // Reading roiLeads requires a doc in the `admins` collection whose ID
+          // is this user's Auth UID. Say so plainly rather than showing an
+          // empty table that looks like "no leads yet".
+          setRoiLeadsError(
+            leadErr?.code === 'permission-denied'
+              ? 'Firestore denied access to ROI leads. This account is a super admin in the dashboard, but its Auth UID is missing from the `admins` collection — add it in the Firebase Console.'
+              : `Could not load ROI leads: ${leadErr?.message || 'unknown error'}`
+          );
+        }
         setIsStaff(false);
         setCurrentStaffData(null);
       } else if (!vendorSnap.empty) {
         // Regular vendor: load their users and staff
         setVendors([]);
+        setRoiLeads([]);
         const usersQ = query(collection(db, 'users'), where('vendorEmail', '==', normalizedEmail));
         const usersSnap = await getDocs(usersQ);
         setUsers(usersSnap.docs.map(d => ({ id: d.id, ...d.data() })));
@@ -248,6 +300,7 @@ const Dashboard = () => {
           setCurrentStaffData(staffDoc);
           setVendors([]);
           setStaffMembers([]);
+          setRoiLeads([]);
           // Staff only sees users they scanned (staffEmail == their email)
           const usersQ = query(collection(db, 'users'), where('staffEmail', '==', normalizedEmail));
           const usersSnap = await getDocs(usersQ);
@@ -505,6 +558,16 @@ const Dashboard = () => {
     s.email?.toLowerCase().includes(searchTerm.toLowerCase())
   );
 
+  const filteredLeads = roiLeads.filter(l => {
+    const q = searchTerm.toLowerCase();
+    return (
+      l.name?.toLowerCase().includes(q) ||
+      l.organisation?.toLowerCase().includes(q) ||
+      l.email?.toLowerCase().includes(q) ||
+      l.phone?.toLowerCase().includes(q)
+    );
+  });
+
   // ─── Users pagination ────────────────────────────────────────────────────────
   const USERS_PAGE_SIZE = 10;
   const [usersPage, setUsersPage] = useState(1);
@@ -517,6 +580,64 @@ const Dashboard = () => {
     (usersPage - 1) * USERS_PAGE_SIZE,
     usersPage * USERS_PAGE_SIZE
   );
+
+  // ─── ROI leads pagination / actions ──────────────────────────────────────────
+  const LEADS_PAGE_SIZE = 10;
+  const [leadsPage, setLeadsPage] = useState(1);
+  const [selectedLead, setSelectedLead] = useState(null);
+  const [leadDialogOpen, setLeadDialogOpen] = useState(false);
+
+  useEffect(() => { setLeadsPage(1); }, [searchTerm]);
+
+  const leadsTotalPages = Math.max(1, Math.ceil(filteredLeads.length / LEADS_PAGE_SIZE));
+  const pagedLeads = filteredLeads.slice(
+    (leadsPage - 1) * LEADS_PAGE_SIZE,
+    leadsPage * LEADS_PAGE_SIZE
+  );
+
+  const handleViewLead = (lead) => {
+    setSelectedLead(lead);
+    setLeadDialogOpen(true);
+  };
+
+  const handleDeleteLead = async (leadId) => {
+    if (!window.confirm('Delete this ROI lead? This cannot be undone.')) return;
+    try {
+      await deleteDoc(doc(db, 'roiLeads', leadId));
+      setRoiLeads(prev => prev.filter(l => l.id !== leadId));
+      toast.success('ROI lead deleted');
+    } catch (error) {
+      console.error('Error deleting ROI lead:', error);
+      toast.error('Failed to delete ROI lead');
+    }
+  };
+
+  const handleExportLeads = () => {
+    const rows = filteredLeads.map(l => ({
+      'Submitted On': fmtLeadDate(l.createdAt),
+      Name: l.name || '',
+      Organisation: l.organisation || '',
+      Email: l.email || '',
+      Phone: l.phone || '',
+      'Monthly Patients': l.monthlyPatients ?? '',
+      'Conversion Rate (%)': l.conversionRate ?? '',
+      'Scan Fee': l.scanFee ?? '',
+      'Insole Price': l.insolePrice ?? '',
+      'Insoles / Month': l.insolesPerMonth ?? '',
+      'Machine Investment': l.machineInvestment ?? '',
+      'Scans / Month': l.scansPerMonth ?? '',
+      'Scan Revenue': l.scanRevenue ?? '',
+      'Insole Revenue': l.insoleRevenue ?? '',
+      'Monthly Revenue': l.monthlyRevenue ?? '',
+      'Annual Revenue': l.annualRevenue ?? '',
+      'Year 1 Net Profit': l.year1NetProfit ?? '',
+      'Year 1 ROI (%)': l.year1RoiPercent ?? '',
+      'Break-even (months)': l.breakEvenMonths ?? '',
+      Source: l.source || '',
+      'Page URL': l.pageUrl || '',
+    }));
+    exportToCSV(rows, `kinetiq_roi_leads_${new Date().toISOString().slice(0, 10)}.csv`);
+  };
 
   const handleExport = () => {
     const rows = filteredUsers.map(u => ({
@@ -641,7 +762,7 @@ const Dashboard = () => {
 
       <main className="max-w-7xl mx-auto px-6 py-8">
         {/* ── Stats Cards ── */}
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
+        <div className={`grid grid-cols-1 md:grid-cols-4 ${isSuperAdmin ? 'lg:grid-cols-5' : ''} gap-6 mb-8`}>
           {isSuperAdmin && (
             <Card className="bg-white/60 backdrop-blur-sm border-purple-100 hover:shadow-lg transition" data-testid="total-vendors-card">
               <CardHeader className="pb-2">
@@ -712,6 +833,21 @@ const Dashboard = () => {
               </div>
             </CardContent>
           </Card>
+
+          {isSuperAdmin && (
+            <Card className="bg-white/60 backdrop-blur-sm border-teal-100 hover:shadow-lg transition" data-testid="roi-leads-card">
+              <CardHeader className="pb-2">
+                <CardDescription className="text-gray-600">ROI Leads</CardDescription>
+                <CardTitle className="text-3xl font-bold text-teal-600">{roiLeads.length}</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="flex items-center gap-2 text-sm text-teal-600">
+                  <Calculator size={16} />
+                  <span>From website calculator</span>
+                </div>
+              </CardContent>
+            </Card>
+          )}
         </div>
 
         {/* ── Charts ── */}
@@ -1341,7 +1477,7 @@ const Dashboard = () => {
             {/* ── TABS ── */}
             <Tabs defaultValue={defaultTab} className="w-full" data-testid="management-tabs">
               <TabsList className={`grid w-full bg-purple-100 ${
-                isSuperAdmin ? 'grid-cols-4' : isStaff ? 'grid-cols-1' : 'grid-cols-2'
+                isSuperAdmin ? 'grid-cols-5' : isStaff ? 'grid-cols-1' : 'grid-cols-2'
               }`}>
                 {isSuperAdmin && (
                   <TabsTrigger value="vendors" data-testid="vendors-tab">
@@ -1363,6 +1499,12 @@ const Dashboard = () => {
                   <TabsTrigger value="all-staff" data-testid="all-staff-tab">
                     <UserCheck size={16} className="mr-2" />
                     All Staff ({staffMembers.length})
+                  </TabsTrigger>
+                )}
+                {isSuperAdmin && (
+                  <TabsTrigger value="roi-leads" data-testid="roi-leads-tab">
+                    <Calculator size={16} className="mr-2" />
+                    ROI Leads ({roiLeads.length})
                   </TabsTrigger>
                 )}
                 {!isSuperAdmin && !isStaff && (
@@ -1832,12 +1974,279 @@ const Dashboard = () => {
                 )}
               </TabsContent>
 
+              {/* ── ROI Leads Tab (Super Admin only) ── */}
+              {/* Leads captured by the ROI calculator widget on the public PHP website. */}
+              <TabsContent value="roi-leads" className="mt-6" data-testid="roi-leads-content">
+                <div className="flex items-center justify-between flex-wrap gap-3 mb-4">
+                  <div>
+                    <h3 className="font-semibold text-gray-800 flex items-center gap-2">
+                      <Calculator size={16} className="text-teal-600" />
+                      ROI Calculator Leads
+                    </h3>
+                    <p className="text-xs text-gray-500 mt-0.5">
+                      Submitted from the website calculator when a visitor downloads their report.
+                    </p>
+                  </div>
+                  <Button
+                    onClick={handleExportLeads}
+                    variant="outline"
+                    disabled={filteredLeads.length === 0}
+                    className="gap-2 border-teal-200 text-teal-700 hover:bg-teal-50 disabled:opacity-40"
+                    data-testid="export-roi-leads"
+                  >
+                    <Download size={16} />
+                    Export CSV
+                  </Button>
+                </div>
+
+                {roiLeadsError && (
+                  <div
+                    className="mb-4 p-4 rounded-lg border border-amber-200 bg-amber-50 text-sm text-amber-800"
+                    data-testid="roi-leads-error"
+                  >
+                    <p className="font-semibold mb-1">ROI leads could not be loaded</p>
+                    <p className="leading-relaxed">{roiLeadsError}</p>
+                  </div>
+                )}
+
+                <div className="border border-teal-100 rounded-lg overflow-x-auto">
+                  <Table>
+                    <TableHeader className="bg-teal-50">
+                      <TableRow>
+                        <TableHead>Submitted</TableHead>
+                        <TableHead>Name</TableHead>
+                        <TableHead>Organisation</TableHead>
+                        <TableHead>Email</TableHead>
+                        <TableHead>Phone</TableHead>
+                        <TableHead>Monthly Revenue</TableHead>
+                        <TableHead>Break-even</TableHead>
+                        <TableHead>Year 1 ROI</TableHead>
+                        <TableHead className="text-right">Actions</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {pagedLeads.map((lead) => (
+                        <TableRow key={lead.id} data-testid={`roi-lead-row-${lead.id}`}>
+                          <TableCell className="text-xs text-gray-500 whitespace-nowrap">
+                            {fmtLeadDate(lead.createdAt)}
+                          </TableCell>
+                          <TableCell className="font-medium">{lead.name || '—'}</TableCell>
+                          <TableCell>{lead.organisation || '—'}</TableCell>
+                          <TableCell className="text-sm">{lead.email || '—'}</TableCell>
+                          <TableCell className="text-sm whitespace-nowrap">{lead.phone || '—'}</TableCell>
+                          <TableCell className="font-semibold text-teal-700 whitespace-nowrap">
+                            {fmtINR(lead.monthlyRevenue)}
+                          </TableCell>
+                          <TableCell>
+                            <Badge className="bg-amber-100 text-amber-700 hover:bg-amber-100 whitespace-nowrap">
+                              {fmtBreakEven(lead.breakEvenMonths)}
+                            </Badge>
+                          </TableCell>
+                          <TableCell>
+                            <Badge className="bg-green-100 text-green-700 hover:bg-green-100">
+                              {lead.year1RoiPercent != null ? `${lead.year1RoiPercent}%` : '—'}
+                            </Badge>
+                          </TableCell>
+                          <TableCell className="text-right">
+                            <div className="flex gap-1 justify-end">
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                className="text-teal-600 hover:text-teal-700 hover:bg-teal-50"
+                                onClick={() => handleViewLead(lead)}
+                                title="View full ROI breakdown"
+                                data-testid={`view-roi-lead-${lead.id}`}
+                              >
+                                <Eye size={16} />
+                              </Button>
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                className="text-red-600 hover:text-red-700 hover:bg-red-50"
+                                onClick={() => handleDeleteLead(lead.id)}
+                                data-testid={`delete-roi-lead-${lead.id}`}
+                              >
+                                <Trash2 size={16} />
+                              </Button>
+                            </div>
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                      {filteredLeads.length === 0 && (
+                        <TableRow>
+                          <TableCell colSpan={9} className="text-center text-gray-400 py-8">
+                            {roiLeadsError
+                              ? 'Access denied — see the message above.'
+                              : roiLeads.length === 0
+                              ? 'No ROI calculator leads yet.'
+                              : 'No leads match your search.'}
+                          </TableCell>
+                        </TableRow>
+                      )}
+                    </TableBody>
+                  </Table>
+                </div>
+
+                {filteredLeads.length > 0 && (
+                  <div className="flex items-center justify-between mt-4 px-1 flex-wrap gap-3">
+                    <p className="text-sm text-gray-500">
+                      Showing{' '}
+                      <span className="font-medium text-gray-700">
+                        {Math.min((leadsPage - 1) * LEADS_PAGE_SIZE + 1, filteredLeads.length)}
+                      </span>
+                      {' '}–{' '}
+                      <span className="font-medium text-gray-700">
+                        {Math.min(leadsPage * LEADS_PAGE_SIZE, filteredLeads.length)}
+                      </span>
+                      {' '}of{' '}
+                      <span className="font-medium text-gray-700">{filteredLeads.length}</span>
+                      {' '}leads
+                    </p>
+                    <div className="flex items-center gap-1">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="h-8 px-3 border-teal-200 text-teal-700 hover:bg-teal-50 disabled:opacity-40"
+                        onClick={() => setLeadsPage(p => Math.max(1, p - 1))}
+                        disabled={leadsPage === 1}
+                      >
+                        ‹ Prev
+                      </Button>
+                      <span className="text-sm text-gray-600 px-2">
+                        Page {leadsPage} of {leadsTotalPages}
+                      </span>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="h-8 px-3 border-teal-200 text-teal-700 hover:bg-teal-50 disabled:opacity-40"
+                        onClick={() => setLeadsPage(p => Math.min(leadsTotalPages, p + 1))}
+                        disabled={leadsPage === leadsTotalPages}
+                      >
+                        Next ›
+                      </Button>
+                    </div>
+                  </div>
+                )}
+              </TabsContent>
+
             </Tabs>
           </CardContent>
         </Card>
+
+        {/* ── ROI Lead Detail Dialog ── */}
+        <Dialog open={leadDialogOpen} onOpenChange={setLeadDialogOpen}>
+          <DialogContent className="max-w-2xl max-h-[85vh] overflow-y-auto">
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2">
+                <Calculator size={18} className="text-teal-600" />
+                ROI Report — {selectedLead?.name || 'Lead'}
+              </DialogTitle>
+              <DialogDescription>
+                Exactly what this visitor entered and the projection they downloaded.
+              </DialogDescription>
+            </DialogHeader>
+
+            {selectedLead && (
+              <div className="space-y-5">
+                {/* Contact */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 p-4 bg-teal-50 rounded-lg border border-teal-100">
+                  <div>
+                    <p className="text-xs text-gray-500">Name</p>
+                    <p className="font-semibold text-gray-800">{selectedLead.name || '—'}</p>
+                  </div>
+                  <div>
+                    <p className="text-xs text-gray-500">Organisation</p>
+                    <p className="font-semibold text-gray-800">{selectedLead.organisation || '—'}</p>
+                  </div>
+                  <div>
+                    <p className="text-xs text-gray-500">Email</p>
+                    <a href={`mailto:${selectedLead.email}`} className="font-medium text-teal-700 hover:underline break-all">
+                      {selectedLead.email || '—'}
+                    </a>
+                  </div>
+                  <div>
+                    <p className="text-xs text-gray-500">Phone</p>
+                    <a href={`tel:${selectedLead.phone}`} className="font-medium text-teal-700 hover:underline">
+                      {selectedLead.phone || '—'}
+                    </a>
+                  </div>
+                  <div className="sm:col-span-2 flex items-center gap-1.5 text-xs text-gray-500 pt-1 border-t border-teal-100">
+                    <Clock size={12} />
+                    Submitted {fmtLeadDate(selectedLead.createdAt)}
+                  </div>
+                </div>
+
+                {/* Inputs */}
+                <div>
+                  <h4 className="text-sm font-semibold text-gray-800 mb-2">Clinic Inputs</h4>
+                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                    {[
+                      ['Monthly patients', selectedLead.monthlyPatients ?? '—'],
+                      ['Conversion rate', selectedLead.conversionRate != null ? `${selectedLead.conversionRate}%` : '—'],
+                      ['Scan fee', fmtINR(selectedLead.scanFee)],
+                      ['Insole price', fmtINR(selectedLead.insolePrice)],
+                      ['Insoles / month', selectedLead.insolesPerMonth ?? '—'],
+                      ['Machine investment', fmtINR(selectedLead.machineInvestment)],
+                    ].map(([label, value]) => (
+                      <div key={label} className="p-3 bg-gray-50 rounded-lg border border-gray-100">
+                        <p className="text-xs text-gray-500">{label}</p>
+                        <p className="font-semibold text-gray-800 text-sm">{value}</p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Projection */}
+                <div>
+                  <h4 className="text-sm font-semibold text-gray-800 mb-2">Projection</h4>
+                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                    {[
+                      ['Scans / month', selectedLead.scansPerMonth ?? '—'],
+                      ['Scan revenue', fmtINR(selectedLead.scanRevenue)],
+                      ['Insole revenue', fmtINR(selectedLead.insoleRevenue)],
+                      ['Monthly revenue', fmtINR(selectedLead.monthlyRevenue)],
+                      ['Year 1 gross', fmtINR(selectedLead.annualRevenue)],
+                      ['Year 1 net profit', fmtINR(selectedLead.year1NetProfit)],
+                    ].map(([label, value]) => (
+                      <div key={label} className="p-3 bg-gray-50 rounded-lg border border-gray-100">
+                        <p className="text-xs text-gray-500">{label}</p>
+                        <p className="font-semibold text-gray-800 text-sm">{value}</p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Headline */}
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="p-4 rounded-lg bg-gradient-to-br from-teal-600 to-emerald-600 text-white">
+                    <p className="text-xs opacity-80 flex items-center gap-1">
+                      <IndianRupee size={12} /> Break-even in
+                    </p>
+                    <p className="text-2xl font-bold">{fmtBreakEven(selectedLead.breakEvenMonths)}</p>
+                  </div>
+                  <div className="p-4 rounded-lg bg-gradient-to-br from-purple-600 to-pink-600 text-white">
+                    <p className="text-xs opacity-80 flex items-center gap-1">
+                      <TrendingUp size={12} /> Year 1 ROI
+                    </p>
+                    <p className="text-2xl font-bold">
+                      {selectedLead.year1RoiPercent != null ? `${selectedLead.year1RoiPercent}%` : '—'}
+                    </p>
+                  </div>
+                </div>
+
+                {selectedLead.pageUrl && (
+                  <p className="text-xs text-gray-400 break-all">
+                    Source page: {selectedLead.pageUrl}
+                  </p>
+                )}
+              </div>
+            )}
+          </DialogContent>
+        </Dialog>
       </main>
     </div>
   );
 };
 
 export default Dashboard;
+
