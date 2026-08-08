@@ -4,6 +4,7 @@ import { AuthProvider, useAuth } from './contexts/AuthContext';
 import { Toaster } from './components/ui/sonner';
 import Login from './pages/Login';
 import Dashboard from './pages/Dashboard';
+import Report from './pages/Report';
 import './App.css';
 
 const PrivateRoute = ({ children }) => {
@@ -25,6 +26,9 @@ function App() {
               </PrivateRoute>
             }
           />
+          {/* Patient-facing report portal — public, no auth. The desktop app
+              distributes this link and its QR code after a scan. */}
+          <Route path="/report/:id" element={<Report />} />
           <Route path="/" element={<Navigate to="/login" />} />
         </Routes>
       </BrowserRouter>
