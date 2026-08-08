@@ -1,1 +1,19 @@
-[[redirects]]   from = "/*"   to = "/index.html"   status = 200
+# Netlify configuration for the KinetiQ dashboard (Create React App via CRACO).
+#
+# Declaring build settings here rather than in the Netlify UI means a newly
+# connected site — e.g. a separate phase-2 environment — deploys correctly with
+# no manual configuration.
+
+[build]
+  command = "npm run build"
+  publish = "build"
+
+# Single-page app fallback. Without this, deep links 404 on direct navigation:
+# the browser asks Netlify for /report/<scanId>, no such file exists on disk,
+# and React Router never gets a chance to handle it. Patients reach the report
+# by QR code and emailed link — always a direct navigation — so this redirect
+# is what makes the report portal reachable at all.
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
