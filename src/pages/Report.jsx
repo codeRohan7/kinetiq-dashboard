@@ -3,6 +3,10 @@ import { useParams } from 'react-router-dom';
 import { db } from '../config/firebase';
 import { doc, getDoc } from 'firebase/firestore';
 import { toast } from 'sonner';
+import {
+  MetricBar, BilateralBar, BODY_CONDITION_ROWS,
+  HEEL_RANGE, SHIN_RANGE, heelSide, shinSide,
+} from '../components/MetricBars';
 
 // ── Severity helpers ──────────────────────────────────────────────────────────
 const SEVERITY_CONFIG = {
@@ -199,6 +203,7 @@ const Report = () => {
     vendorName, timestamp, medialArchType, footType,
     postureData, visionAnalysis, archVisionAnalysis,
     analysis, heatmapUrls, imageUrls, postureOverlayUrl,
+    legData, legOverlayUrl,
     occupation, lifestyle, activities, problem,
   } = scanData;
 
@@ -207,6 +212,8 @@ const Report = () => {
   const sevConfig  = getSeverityConfig(archSev);
 
   const postureScore = postureData?.score ?? null;
+  const legFindings  = legData?.findings ?? null;
+  const hasLegSection = Boolean(legOverlayUrl || legFindings);
   const postureAngles = Array.isArray(postureData?.angles) ? postureData.angles : [];
 
   return (
@@ -386,6 +393,27 @@ const Report = () => {
                 )}
 
                 <div className="space-y-4">
+                  {/* Body condition — threshold bars with the value pinned
+                      against its normal range, matching the printed report */}
+                  {postureAngles.length > 0 && (
+                    <div>
+                      <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1">Body Condition</p>
+                      {BODY_CONDITION_ROWS.map(row => {
+                        const angle = postureAngles.find(a => a.name === row.metric);
+                        if (!angle) return null;
+                        return (
+                          <MetricBar
+                            key={row.metric}
+                            label={row.label}
+                            angle={angle}
+                            normalText={row.normal}
+                            abnormalText={row.abnormal}
+                          />
+                        );
+                      })}
+                    </div>
+                  )}
+
                   {/* Angle measurements table */}
                   {postureAngles.length > 0 && (
                     <div>
@@ -431,6 +459,59 @@ const Report = () => {
                     <div className="p-4 bg-gray-50 border border-gray-200 rounded-xl">
                       <p className="text-sm text-gray-700">{postureData.summary}</p>
                     </div>
+                  )}
+                </div>
+              </div>
+            </SectionCard>
+          )}
+
+          {/* ═══ LOWER LIMB CONDITION ════════════════════════════════════════ */}
+          {hasLegSection && (
+            <SectionCard title="Lower Limb Condition" icon="🦵">
+              <div className="grid md:grid-cols-2 gap-6">
+
+                {legOverlayUrl && (
+                  <div className="rounded-xl overflow-hidden border border-gray-200 bg-gray-900">
+                    <div className="px-3 py-2 bg-gray-900 text-teal-400 text-xs font-semibold tracking-wider">
+                      Posterior Standing View · Skeletal Alignment
+                    </div>
+                    <img
+                      src={legOverlayUrl}
+                      alt="Leg alignment with heel and shin markers"
+                      className="w-full object-contain max-h-80"
+                    />
+                    {legData?.landmarksEdited && (
+                      <p className="px-3 py-2 text-xs text-gray-500 italic border-t border-white/10">
+                        Landmark positions reviewed and adjusted by the clinician.
+                      </p>
+                    )}
+                  </div>
+                )}
+
+                <div>
+                  {legFindings ? (
+                    <>
+                      <BilateralBar
+                        title="Heel"
+                        range={HEEL_RANGE}
+                        leftLabel="Inversion"
+                        rightLabel="Eversion"
+                        left={heelSide(legFindings.heelLeft)}
+                        right={heelSide(legFindings.heelRight)}
+                      />
+                      <BilateralBar
+                        title="Tibial"
+                        range={SHIN_RANGE}
+                        leftLabel="Tibial Torsion"
+                        rightLabel="Fibular Torsion"
+                        left={shinSide(legFindings.shinLeft)}
+                        right={shinSide(legFindings.shinRight)}
+                      />
+                    </>
+                  ) : (
+                    <p className="text-sm text-gray-400 py-6 text-center">
+                      No lower-limb measurements were recorded for this scan.
+                    </p>
                   )}
                 </div>
               </div>
