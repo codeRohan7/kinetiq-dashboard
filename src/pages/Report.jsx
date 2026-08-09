@@ -480,9 +480,11 @@ const Report = () => {
                       alt="Leg alignment with heel and shin markers"
                       className="w-full object-contain max-h-80"
                     />
-                    {legData?.landmarksEdited && (
+                    {(legData?.landmarksSeeded || legData?.landmarksEdited) && (
                       <p className="px-3 py-2 text-xs text-gray-500 italic border-t border-white/10">
-                        Landmark positions reviewed and adjusted by the clinician.
+                        {legData?.landmarksSeeded
+                          ? 'Automatic pose detection did not read this capture. Marker positions were placed manually by the clinician.'
+                          : 'Landmark positions reviewed and adjusted by the clinician.'}
                       </p>
                     )}
                   </div>
