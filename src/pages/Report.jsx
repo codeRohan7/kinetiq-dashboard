@@ -7,6 +7,7 @@ import {
   MetricBar, BilateralBar, BODY_CONDITION_ROWS,
   HEEL_RANGE, SHIN_RANGE, heelSide, shinSide,
 } from '../components/MetricBars';
+import FootPressurePanel from '../components/FootPressurePanel';
 
 // ── Severity helpers ──────────────────────────────────────────────────────────
 const SEVERITY_CONFIG = {
@@ -29,6 +30,26 @@ const ANALYSIS_LABELS = {
 };
 
 // ── Sub-components ────────────────────────────────────────────────────────────
+
+/**
+ * One printed page of the report.
+ *
+ * Each scan area — foot, legs, body — gets its own page, so a clinician can
+ * hand a patient the sheet that concerns them and the printed PDF matches the
+ * on-screen sections one to one. The running header repeats the patient
+ * identifiers on every page, because pages get separated once printed.
+ */
+function ReportPage({ id, subtitle, meta, children }) {
+  return (
+    <section id={id} className="report-page space-y-6">
+      <div className="hidden print:flex items-baseline justify-between border-b border-gray-200 pb-2 mb-4">
+        <span className="text-sm font-bold text-violet-700">KinetiQ · {subtitle}</span>
+        <span className="text-[10px] text-gray-400">{meta}</span>
+      </div>
+      {children}
+    </section>
+  );
+}
 
 function SectionCard({ title, icon, children, noPad }) {
   return (
@@ -203,7 +224,7 @@ const Report = () => {
     vendorName, timestamp, medialArchType, footType,
     postureData, visionAnalysis, archVisionAnalysis,
     analysis, heatmapUrls, imageUrls, postureOverlayUrl,
-    legData, legOverlayUrl,
+    legData, legOverlayUrl, sensorAnalytics,
     occupation, lifestyle, activities, problem,
   } = scanData;
 
@@ -213,6 +234,8 @@ const Report = () => {
 
   const postureScore = postureData?.score ?? null;
   const legFindings  = legData?.findings ?? null;
+  const pageMeta     = [patientName || `${firstName ?? ''} ${lastName ?? ''}`.trim(), scanDate, id?.slice(0, 8).toUpperCase()]
+    .filter(Boolean).join('  ·  ');
   const hasLegSection = Boolean(legOverlayUrl || legFindings);
   const postureAngles = Array.isArray(postureData?.angles) ? postureData.angles : [];
 
@@ -224,6 +247,10 @@ const Report = () => {
           body { background: white !important; font-size: 11px; }
           .no-print { display: none !important; }
           .print-break { page-break-before: always; }
+          /* Every section after the first starts a fresh sheet. */
+          .report-page { break-before: page; page-break-before: always; }
+          .report-page:first-of-type { break-before: auto; page-break-before: avoid; }
+          .break-inside-avoid { break-inside: avoid; }
           img { max-height: 220px; object-fit: contain; break-inside: avoid; }
           .rounded-2xl, .rounded-xl { break-inside: avoid; }
         }
@@ -252,10 +279,30 @@ const Report = () => {
               Download PDF
             </button>
           </div>
+
+          {/* Section jump-links. Screen only — in print the sections are
+              already separate sheets, so links to them are meaningless. */}
+          <nav className="max-w-5xl mx-auto px-6 pb-2 flex gap-1 flex-wrap">
+            {[
+              ['summary', 'Summary'],
+              ['foot',    'Foot'],
+              ['legs',    'Legs'],
+              ['body',    'Body'],
+              ['advice',  'Advice'],
+            ].map(([anchor, label]) => (
+              <a
+                key={anchor}
+                href={`#${anchor}`}
+                className="text-xs font-semibold text-gray-500 hover:text-violet-700 hover:bg-violet-50 rounded-lg px-3 py-1.5 transition"
+              >
+                {label}
+              </a>
+            ))}
+          </nav>
         </header>
 
         <main ref={printRef} className="max-w-5xl mx-auto px-4 py-8 space-y-6">
-
+          <ReportPage id="summary" subtitle="Patient & Findings Overview" meta={pageMeta}>
           {/* ═══ HERO BANNER ═══════════════════════════════════════════════════ */}
           <div className="report-gradient rounded-2xl overflow-hidden text-white shadow-xl print:shadow-none">
             <div className="px-8 py-7 flex flex-col md:flex-row md:items-center justify-between gap-4">
@@ -282,7 +329,6 @@ const Report = () => {
               </div>
             </div>
           </div>
-
           {/* ═══ PATIENT DETAILS GRID ══════════════════════════════════════════ */}
           <SectionCard title="Patient Profile" icon="👤">
             <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
@@ -309,7 +355,6 @@ const Report = () => {
               </div>
             )}
           </SectionCard>
-
           {/* ═══ BIOMECHANICAL SUMMARY ════════════════════════════════════════ */}
           <SectionCard title="Biomechanical Findings Summary" icon="📊">
             <div className="grid grid-cols-1 md:grid-cols-3 gap-6 items-center">
@@ -357,7 +402,114 @@ const Report = () => {
               </div>
             )}
           </SectionCard>
+          </ReportPage>
 
+          <ReportPage id="foot" subtitle="Plantar Pressure & Arch" meta={pageMeta}>
+          {/* ═══ STATIC PRESSURE MEASUREMENTS ══════════════════════════════ */}
+          <SectionCard title="Static Plantar Pressure" icon="🦶">
+            <FootPressurePanel
+              analytics={sensorAnalytics}
+              heatmapUrls={heatmapUrls ?? []}
+              archType={medialArchType}
+            />
+          </SectionCard>
+          {/* ═══ PLANTAR PRESSURE HEATMAPS ═══════════════════════════════════ */}
+          {heatmapUrls?.length > 0 && (
+            <SectionCard title="Plantar Pressure Heatmap Analysis" icon="🌡️">
+              <div className="mb-4 flex items-center gap-3 text-xs text-gray-500 flex-wrap">
+                <span className="flex items-center gap-1"><span className="w-3 h-3 rounded-sm bg-blue-500 inline-block" /> Low pressure</span>
+                <span className="flex items-center gap-1"><span className="w-3 h-3 rounded-sm bg-green-500 inline-block" /> Medium</span>
+                <span className="flex items-center gap-1"><span className="w-3 h-3 rounded-sm bg-yellow-400 inline-block" /> High</span>
+                <span className="flex items-center gap-1"><span className="w-3 h-3 rounded-sm bg-red-600 inline-block" /> Peak pressure</span>
+              </div>
+              <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
+                {heatmapUrls.map((url, i) => (
+                  <div key={i} className="rounded-xl overflow-hidden border border-gray-100 bg-black/5">
+                    <div className="text-center text-xs font-semibold text-gray-500 py-2 bg-gray-50">
+                      {i === 0 ? 'Left Foot' : i === 1 ? 'Right Foot' : `Scan ${i + 1}`}
+                    </div>
+                    <img src={url} alt={`Heatmap ${i + 1}`} className="w-full object-contain max-h-56 bg-black" />
+                  </div>
+                ))}
+              </div>
+              {archVisionAnalysis && (
+                <div className="mt-4 grid md:grid-cols-2 gap-3">
+                  {archVisionAnalysis.leftFoot && (
+                    <div className="p-3 bg-blue-50 border border-blue-200 rounded-xl">
+                      <p className="text-xs font-bold text-blue-700 mb-1">Left Foot Analysis</p>
+                      <p className="text-xs text-blue-800 leading-relaxed">{archVisionAnalysis.leftFoot}</p>
+                    </div>
+                  )}
+                  {archVisionAnalysis.rightFoot && (
+                    <div className="p-3 bg-purple-50 border border-purple-200 rounded-xl">
+                      <p className="text-xs font-bold text-purple-700 mb-1">Right Foot Analysis</p>
+                      <p className="text-xs text-purple-800 leading-relaxed">{archVisionAnalysis.rightFoot}</p>
+                    </div>
+                  )}
+                </div>
+              )}
+            </SectionCard>
+          )}
+          </ReportPage>
+
+          <ReportPage id="legs" subtitle="Lower Limb Alignment" meta={pageMeta}>
+          {/* ═══ LOWER LIMB CONDITION ════════════════════════════════════════ */}
+          {hasLegSection && (
+            <SectionCard title="Lower Limb Condition" icon="🦵">
+              <div className="grid md:grid-cols-2 gap-6">
+
+                {legOverlayUrl && (
+                  <div className="rounded-xl overflow-hidden border border-gray-200 bg-gray-900">
+                    <div className="px-3 py-2 bg-gray-900 text-teal-400 text-xs font-semibold tracking-wider">
+                      Posterior Standing View · Skeletal Alignment
+                    </div>
+                    <img
+                      src={legOverlayUrl}
+                      alt="Leg alignment with heel and shin markers"
+                      className="w-full object-contain max-h-80"
+                    />
+                    {(legData?.landmarksSeeded || legData?.landmarksEdited) && (
+                      <p className="px-3 py-2 text-xs text-gray-500 italic border-t border-white/10">
+                        {legData?.landmarksSeeded
+                          ? 'Automatic pose detection did not read this capture. Marker positions were placed manually by the clinician.'
+                          : 'Landmark positions reviewed and adjusted by the clinician.'}
+                      </p>
+                    )}
+                  </div>
+                )}
+
+                <div>
+                  {legFindings ? (
+                    <>
+                      <BilateralBar
+                        title="Heel"
+                        range={HEEL_RANGE}
+                        leftLabel="Inversion"
+                        rightLabel="Eversion"
+                        left={heelSide(legFindings.heelLeft)}
+                        right={heelSide(legFindings.heelRight)}
+                      />
+                      <BilateralBar
+                        title="Tibial"
+                        range={SHIN_RANGE}
+                        leftLabel="Tibial Torsion"
+                        rightLabel="Fibular Torsion"
+                        left={shinSide(legFindings.shinLeft)}
+                        right={shinSide(legFindings.shinRight)}
+                      />
+                    </>
+                  ) : (
+                    <p className="text-sm text-gray-400 py-6 text-center">
+                      No lower-limb measurements were recorded for this scan.
+                    </p>
+                  )}
+                </div>
+              </div>
+            </SectionCard>
+          )}
+          </ReportPage>
+
+          <ReportPage id="body" subtitle="Posture & Body Alignment" meta={pageMeta}>
           {/* ═══ POSTURE ANALYSIS ════════════════════════════════════════════ */}
           {(postureOverlayUrl || postureAngles.length > 0 || visionAnalysis) && (
             <SectionCard title="Posture & Body Alignment Analysis" icon="🧍">
@@ -464,100 +616,9 @@ const Report = () => {
               </div>
             </SectionCard>
           )}
+          </ReportPage>
 
-          {/* ═══ LOWER LIMB CONDITION ════════════════════════════════════════ */}
-          {hasLegSection && (
-            <SectionCard title="Lower Limb Condition" icon="🦵">
-              <div className="grid md:grid-cols-2 gap-6">
-
-                {legOverlayUrl && (
-                  <div className="rounded-xl overflow-hidden border border-gray-200 bg-gray-900">
-                    <div className="px-3 py-2 bg-gray-900 text-teal-400 text-xs font-semibold tracking-wider">
-                      Posterior Standing View · Skeletal Alignment
-                    </div>
-                    <img
-                      src={legOverlayUrl}
-                      alt="Leg alignment with heel and shin markers"
-                      className="w-full object-contain max-h-80"
-                    />
-                    {(legData?.landmarksSeeded || legData?.landmarksEdited) && (
-                      <p className="px-3 py-2 text-xs text-gray-500 italic border-t border-white/10">
-                        {legData?.landmarksSeeded
-                          ? 'Automatic pose detection did not read this capture. Marker positions were placed manually by the clinician.'
-                          : 'Landmark positions reviewed and adjusted by the clinician.'}
-                      </p>
-                    )}
-                  </div>
-                )}
-
-                <div>
-                  {legFindings ? (
-                    <>
-                      <BilateralBar
-                        title="Heel"
-                        range={HEEL_RANGE}
-                        leftLabel="Inversion"
-                        rightLabel="Eversion"
-                        left={heelSide(legFindings.heelLeft)}
-                        right={heelSide(legFindings.heelRight)}
-                      />
-                      <BilateralBar
-                        title="Tibial"
-                        range={SHIN_RANGE}
-                        leftLabel="Tibial Torsion"
-                        rightLabel="Fibular Torsion"
-                        left={shinSide(legFindings.shinLeft)}
-                        right={shinSide(legFindings.shinRight)}
-                      />
-                    </>
-                  ) : (
-                    <p className="text-sm text-gray-400 py-6 text-center">
-                      No lower-limb measurements were recorded for this scan.
-                    </p>
-                  )}
-                </div>
-              </div>
-            </SectionCard>
-          )}
-
-          {/* ═══ PLANTAR PRESSURE HEATMAPS ═══════════════════════════════════ */}
-          {heatmapUrls?.length > 0 && (
-            <SectionCard title="Plantar Pressure Heatmap Analysis" icon="🌡️">
-              <div className="mb-4 flex items-center gap-3 text-xs text-gray-500 flex-wrap">
-                <span className="flex items-center gap-1"><span className="w-3 h-3 rounded-sm bg-blue-500 inline-block" /> Low pressure</span>
-                <span className="flex items-center gap-1"><span className="w-3 h-3 rounded-sm bg-green-500 inline-block" /> Medium</span>
-                <span className="flex items-center gap-1"><span className="w-3 h-3 rounded-sm bg-yellow-400 inline-block" /> High</span>
-                <span className="flex items-center gap-1"><span className="w-3 h-3 rounded-sm bg-red-600 inline-block" /> Peak pressure</span>
-              </div>
-              <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
-                {heatmapUrls.map((url, i) => (
-                  <div key={i} className="rounded-xl overflow-hidden border border-gray-100 bg-black/5">
-                    <div className="text-center text-xs font-semibold text-gray-500 py-2 bg-gray-50">
-                      {i === 0 ? 'Left Foot' : i === 1 ? 'Right Foot' : `Scan ${i + 1}`}
-                    </div>
-                    <img src={url} alt={`Heatmap ${i + 1}`} className="w-full object-contain max-h-56 bg-black" />
-                  </div>
-                ))}
-              </div>
-              {archVisionAnalysis && (
-                <div className="mt-4 grid md:grid-cols-2 gap-3">
-                  {archVisionAnalysis.leftFoot && (
-                    <div className="p-3 bg-blue-50 border border-blue-200 rounded-xl">
-                      <p className="text-xs font-bold text-blue-700 mb-1">Left Foot Analysis</p>
-                      <p className="text-xs text-blue-800 leading-relaxed">{archVisionAnalysis.leftFoot}</p>
-                    </div>
-                  )}
-                  {archVisionAnalysis.rightFoot && (
-                    <div className="p-3 bg-purple-50 border border-purple-200 rounded-xl">
-                      <p className="text-xs font-bold text-purple-700 mb-1">Right Foot Analysis</p>
-                      <p className="text-xs text-purple-800 leading-relaxed">{archVisionAnalysis.rightFoot}</p>
-                    </div>
-                  )}
-                </div>
-              )}
-            </SectionCard>
-          )}
-
+          <ReportPage id="advice" subtitle="Recommendations & Full Report" meta={pageMeta}>
           {/* ═══ ORTHOTIC RECOMMENDATIONS ════════════════════════════════════ */}
           {(archVisionAnalysis?.insoleRecommendation || archVisionAnalysis?.footwearAdvice) && (
             <SectionCard title="Recommended Orthotics & Footwear" icon="👟">
@@ -577,7 +638,6 @@ const Report = () => {
               </div>
             </SectionCard>
           )}
-
           {/* ═══ FULL AI CLINICAL REPORT ══════════════════════════════════════ */}
           {analysis && (
             <SectionCard title="Full AI Clinical Report" icon="📋">
@@ -599,7 +659,6 @@ const Report = () => {
               </div>
             </SectionCard>
           )}
-
           {/* ═══ CLINICAL SCAN GALLERY ════════════════════════════════════════ */}
           {imageUrls?.length > 0 && (
             <SectionCard title="Clinical Scan Captures" icon="📸">
@@ -615,6 +674,7 @@ const Report = () => {
               </div>
             </SectionCard>
           )}
+          </ReportPage>
 
           {/* ═══ FOOTER ══════════════════════════════════════════════════════ */}
           <div className="text-center py-6 space-y-1">
@@ -629,7 +689,6 @@ const Report = () => {
               Consult a qualified healthcare professional for treatment decisions.
             </p>
           </div>
-
         </main>
       </div>
     </>
