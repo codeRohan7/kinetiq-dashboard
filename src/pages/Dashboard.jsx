@@ -1,13 +1,12 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { auth, db } from '../config/firebase';
-import { initializeApp, getApps } from 'firebase/app';
-import { getAuth, createUserWithEmailAndPassword, setPersistence, inMemoryPersistence, sendPasswordResetEmail } from 'firebase/auth';
-import { collection, getDocs, addDoc, query, where, doc, updateDoc, deleteDoc, increment } from 'firebase/firestore';
+import { createUserWithEmailAndPassword, setPersistence, inMemoryPersistence, sendPasswordResetEmail } from 'firebase/auth';
+import { collection, getDocs, addDoc, query, where, doc, updateDoc, deleteDoc } from 'firebase/firestore';
 import {
-  Users, Building2, Activity, TrendingUp, LogOut, Plus, Search,
+  Users, Building2, Activity, TrendingUp, Plus, Search,
   Edit2, Trash2, Eye, EyeOff, KeyRound, Filter, Download, UserCog,
-  UserCheck, Shield, ChevronRight, Calculator, IndianRupee, Clock
+  UserCheck, ChevronRight, Calculator, IndianRupee, Clock
 } from 'lucide-react';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
@@ -20,19 +19,11 @@ import { Badge } from '../components/ui/badge';
 import { toast } from 'sonner';
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, BarChart, Bar, Legend } from 'recharts';
 
-// Secondary Firebase app — uses inMemoryPersistence so it never
-// touches localStorage and never displaces the admin session.
-const secondaryApp = getApps().find(a => a.name === 'vendorHelper') ||
-  initializeApp({
-    apiKey: "AIzaSyAdJldm2L-HRChGyu6vpF3SYqBm--RQ9sU",
-    authDomain: "kinetiq-3ec44.firebaseapp.com",
-    projectId: "kinetiq-3ec44",
-    storageBucket: "kinetiq-3ec44.firebasestorage.app",
-    messagingSenderId: "1043474090428",
-    appId: "1:1043474090428:web:19bb670e0e2ab1486b03b9",
-  }, 'vendorHelper');
-const secondaryAuth = getAuth(secondaryApp);
-setPersistence(secondaryAuth, inMemoryPersistence).catch(console.error);
+import { secondaryAuth } from '../lib/secondaryAuth';
+import {
+  listStaffForVendor, createStaff, updateStaff, deleteStaff,
+  resetStaffPassword, emptyStaffForm,
+} from '../lib/staffService';
 
 const ARCH_TYPES = [
   { id: 'All', label: 'All Arch Types' },
@@ -397,84 +388,39 @@ const Dashboard = () => {
     }
   };
 
-  const handleLogout = async () => {
-    try {
-      await auth.signOut();
-      navigate('/login');
-    } catch (error) {
-      console.error('Logout error:', error);
-    }
-  };
-
   // ─── Staff Management ───────────────────────────────────────────────────────
 
   const handleOpenManageStaff = async (vendor) => {
     setSelectedVendorForStaff(vendor);
-    setAddStaffForm({ name: '', email: '', phone: '', password: '' });
+    setAddStaffForm(emptyStaffForm());
     setShowStaffPassword(false);
-    // Load staff for this vendor
-    const staffQ = query(collection(db, 'staff'), where('vendorEmail', '==', vendor.email));
-    const staffSnap = await getDocs(staffQ);
-    setVendorStaffList(staffSnap.docs.map(d => ({ id: d.id, ...d.data() })));
+    setVendorStaffList(await listStaffForVendor(vendor.email));
     setManageStaffDialogOpen(true);
+  };
+
+  const refreshVendorStaffList = async () => {
+    if (!selectedVendorForStaff) return;
+    setVendorStaffList(await listStaffForVendor(selectedVendorForStaff.email));
   };
 
   const handleAddStaff = async (e) => {
     e.preventDefault();
-    if (!addStaffForm.password || addStaffForm.password.length < 6) {
-      toast.error('Password must be at least 6 characters');
-      return;
-    }
-    const normalizedEmail = addStaffForm.email.trim().toLowerCase();
-
-    // Check if already in staff
-    const existingStaffQ = query(collection(db, 'staff'), where('email', '==', normalizedEmail));
-    const existingStaffSnap = await getDocs(existingStaffQ);
-    if (!existingStaffSnap.empty) {
-      toast.error('A staff member with this email already exists.');
-      return;
-    }
-
     setAddingStaff(true);
     try {
-      await setPersistence(secondaryAuth, inMemoryPersistence);
-      let authExisted = false;
-      try {
-        await createUserWithEmailAndPassword(secondaryAuth, normalizedEmail, addStaffForm.password);
-        await secondaryAuth.signOut();
-      } catch (authError) {
-        if (authError.code === 'auth/email-already-in-use') {
-          authExisted = true;
-          await sendPasswordResetEmail(auth, normalizedEmail);
-          toast.warning('Email already had an account. A password reset email was sent.');
-        } else {
-          throw authError;
-        }
-      }
-
-      await addDoc(collection(db, 'staff'), {
-        name: addStaffForm.name,
-        email: normalizedEmail,
-        phone: addStaffForm.phone,
-        companyName: addStaffForm.companyName,
-        address: addStaffForm.address,
-        vendorEmail: selectedVendorForStaff.email,
-        vendorId: selectedVendorForStaff.id,
-        vendorCompanyName: selectedVendorForStaff.companyName || selectedVendorForStaff.name,
-        createdAt: new Date().toISOString(),
-        status: 'active',
-        isStaff: true
+      const { authExisted } = await createStaff({
+        form: addStaffForm,
+        vendor: selectedVendorForStaff,
       });
 
-      toast.success(`Staff member "${addStaffForm.name}" added successfully!`);
-      setAddStaffForm({ name: '', email: '', phone: '', companyName: '', address: '', password: '' });
-      setShowStaffPassword(false);
+      if (authExisted) {
+        toast.warning('Email already had an account. A password reset email was sent.');
+      } else {
+        toast.success(`Staff member "${addStaffForm.name}" added successfully!`);
+      }
 
-      // Refresh staff list in dialog
-      const staffQ = query(collection(db, 'staff'), where('vendorEmail', '==', selectedVendorForStaff.email));
-      const staffSnap = await getDocs(staffQ);
-      setVendorStaffList(staffSnap.docs.map(d => ({ id: d.id, ...d.data() })));
-      // Refresh main data
+      setAddStaffForm(emptyStaffForm());
+      setShowStaffPassword(false);
+      await refreshVendorStaffList();
       fetchData();
     } catch (error) {
       console.error('Error adding staff:', error);
@@ -485,16 +431,15 @@ const Dashboard = () => {
   };
 
   const handleDeleteStaff = async (staffId, staffName) => {
-    if (window.confirm(`Are you sure you want to delete staff member "${staffName}"?`)) {
-      try {
-        await deleteDoc(doc(db, 'staff', staffId));
-        toast.success('Staff member deleted successfully');
-        setVendorStaffList(prev => prev.filter(s => s.id !== staffId));
-        fetchData();
-      } catch (error) {
-        console.error('Error deleting staff:', error);
-        toast.error('Failed to delete staff member');
-      }
+    if (!window.confirm(`Are you sure you want to delete staff member "${staffName}"?`)) return;
+    try {
+      await deleteStaff(staffId);
+      toast.success('Staff member deleted successfully');
+      setVendorStaffList(prev => prev.filter(s => s.id !== staffId));
+      fetchData();
+    } catch (error) {
+      console.error('Error deleting staff:', error);
+      toast.error('Failed to delete staff member');
     }
   };
 
@@ -506,22 +451,10 @@ const Dashboard = () => {
   const handleUpdateStaff = async (e) => {
     e.preventDefault();
     try {
-      const staffRef = doc(db, 'staff', editStaffData.id);
-      await updateDoc(staffRef, {
-        name: editStaffData.name,
-        phone: editStaffData.phone,
-        companyName: editStaffData.companyName,
-        address: editStaffData.address,
-        status: editStaffData.status,
-      });
+      await updateStaff(editStaffData.id, editStaffData);
       toast.success('Staff member updated successfully!');
       setEditStaffDialogOpen(false);
-      // Refresh vendor staff list if dialog is open
-      if (manageStaffDialogOpen && selectedVendorForStaff) {
-        const staffQ = query(collection(db, 'staff'), where('vendorEmail', '==', selectedVendorForStaff.email));
-        const staffSnap = await getDocs(staffQ);
-        setVendorStaffList(staffSnap.docs.map(d => ({ id: d.id, ...d.data() })));
-      }
+      if (manageStaffDialogOpen) await refreshVendorStaffList();
       fetchData();
     } catch (error) {
       console.error('Error updating staff:', error);
@@ -531,7 +464,7 @@ const Dashboard = () => {
 
   const handleResetStaffPassword = async (staffEmail) => {
     try {
-      await sendPasswordResetEmail(auth, staffEmail);
+      await resetStaffPassword(staffEmail);
       toast.success(`Password reset email sent to ${staffEmail}`);
     } catch (err) {
       toast.error('Failed to send reset email: ' + err.message);
@@ -665,7 +598,7 @@ const Dashboard = () => {
 
   if (loading) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-purple-50 via-pink-50 to-blue-50">
+      <div className="min-h-[80vh] flex items-center justify-center">
         <div className="text-center">
           <div className="w-16 h-16 border-4 border-purple-600 border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
           <p className="text-gray-600">Loading dashboard...</p>
@@ -712,13 +645,6 @@ const Dashboard = () => {
     }
   };
 
-  // ─── Role label ──────────────────────────────────────────────────────────────
-  const portalLabel = isSuperAdmin
-    ? 'Super Admin Portal'
-    : isStaff
-      ? `Staff Portal${currentStaffData?.vendorCompanyName ? ` — ${currentStaffData.vendorCompanyName}` : ''}`
-      : 'Vendor Portal';
-
   // ─── Tabs config ─────────────────────────────────────────────────────────────
   // Super Admin: vendors | all-users | users-by-vendor | all-staff
   // Vendor: users | my-staff
@@ -726,41 +652,7 @@ const Dashboard = () => {
   const defaultTab = isSuperAdmin ? 'vendors' : 'users';
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-purple-50 via-pink-50 to-blue-50">
-      <header className="bg-white/80 backdrop-blur-md border-b border-purple-100 sticky top-0 z-50">
-        <div className="max-w-7xl mx-auto px-6 py-4 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 bg-gradient-to-br from-purple-600 to-pink-600 rounded-xl flex items-center justify-center">
-              <Activity className="text-white" size={24} />
-            </div>
-            <div>
-              <h1 className="text-2xl font-bold bg-gradient-to-r from-purple-600 to-pink-600 bg-clip-text text-transparent" style={{ fontFamily: 'Space Grotesk, sans-serif' }} data-testid="dashboard-title">
-                KINETIQ Dashboard
-              </h1>
-              <div className="flex items-center gap-1.5">
-                {isStaff
-                  ? <UserCheck size={12} className="text-blue-500" />
-                  : isSuperAdmin
-                    ? <Shield size={12} className="text-purple-500" />
-                    : <Building2 size={12} className="text-pink-500" />
-                }
-                <p className="text-xs text-gray-500">{portalLabel}</p>
-              </div>
-            </div>
-          </div>
-          <Button
-            onClick={handleLogout}
-            variant="outline"
-            className="gap-2 border-purple-200 hover:bg-purple-50 hover:text-purple-700"
-            data-testid="logout-button"
-          >
-            <LogOut size={18} />
-            Logout
-          </Button>
-        </div>
-      </header>
-
-      <main className="max-w-7xl mx-auto px-6 py-8">
+    <main className="max-w-7xl mx-auto px-6 py-8">
         {/* ── Stats Cards ── */}
         <div className={`grid grid-cols-1 md:grid-cols-4 ${isSuperAdmin ? 'lg:grid-cols-5' : ''} gap-6 mb-8`}>
           {isSuperAdmin && (
@@ -2243,8 +2135,7 @@ const Dashboard = () => {
             )}
           </DialogContent>
         </Dialog>
-      </main>
-    </div>
+    </main>
   );
 };
 

@@ -36,6 +36,20 @@ const Login = () => {
       const vendorSnap = await getDocs(vendorQ);
 
       if (!vendorSnap.empty) {
+        const vendorData = vendorSnap.docs[0].data();
+
+        // Deleting an account from Vendor Settings is a soft delete — the
+        // Firebase Auth login survives, so the status flag is what stops them
+        // signing back in. Super admins are exempt so they can still get in to
+        // sort out a mis-flagged account.
+        if (!vendorData.isSuperAdmin
+            && (vendorData.status === 'deleted' || vendorData.status === 'inactive')) {
+          toast.error('This account has been deleted. Contact KinetiQ support to restore it.');
+          await auth.signOut();
+          setLoading(false);
+          return;
+        }
+
         // It's a vendor or super admin — proceed to dashboard
         toast.success('Login successful!');
         navigate('/dashboard');
