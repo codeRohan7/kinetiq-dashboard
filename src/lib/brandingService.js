@@ -14,8 +14,15 @@ import {
  * vendors/{vendorId}/ in Cloud Storage.
  *
  * Every mutation writes the whole slot value at once (merge:true at the field
- * level) and bumps `revision`. KinetiQE compares the revision it last synced
- * against the live one to decide whether to re-download anything.
+ * level) and bumps `revision`.
+ *
+ * `revision` is a change counter for humans reading the doc — it is recorded in
+ * KinetiQE's cache manifest but deliberately not what drives re-downloads.
+ * KinetiQE invalidates per asset, on the Cloud Storage path: uploadAsset() below
+ * mints a fresh path for every upload and never reuses one, so a changed path is
+ * exactly "the vendor replaced this file". That beats a revision check on two
+ * counts — a revision bump from an unrelated field costs no downloads, and a
+ * file deleted or corrupted on the kiosk's disk still gets repaired.
  */
 
 export const brandingDocRef = (vendorId) => doc(db, 'vendorBranding', vendorId);
